@@ -13,32 +13,31 @@ st.markdown("Visão interativa da 92ª Zona Eleitoral de Araruama.")
 
 @st.cache_data
 def carregar_dados():
-    # Procura automaticamente qualquer arquivo CSV ou XLSX na pasta do projeto
+    # Procura automaticamente por ficheiros TSV, CSV ou XLSX na pasta
+    arquivos_tsv = glob.glob("*.tsv")
     arquivos_csv = glob.glob("*.csv")
     arquivos_xlsx = glob.glob("*.xlsx")
     
-    if arquivos_csv:
-        nome_arquivo = arquivos_csv[0]
-        df = pd.read_csv(nome_arquivo)
+    if arquivos_tsv:
+        df = pd.read_csv(arquivos_tsv[0], sep='\t')
+    elif arquivos_csv:
+        df = pd.read_csv(arquivos_csv[0])
     elif arquivos_xlsx:
-        nome_arquivo = arquivos_xlsx[0]
-        df = pd.read_excel(nome_arquivo)
+        df = pd.read_excel(arquivos_xlsx[0])
     else:
-        st.error("Nenhum arquivo de planilha (CSV ou XLSX) foi encontrado na pasta do GitHub.")
+        st.error("Nenhum ficheiro de dados encontrado na pasta do repositório.")
         st.stop()
 
     df.columns = [str(col).strip().upper() for col in df.columns]
 
-    # Verifica se Latitude e Longitude estão juntas em uma única coluna ou separadas
+    # Processa a coluna de coordenadas combinadas se existir
     col_coords = next((c for c in df.columns if 'LATITUDE' in c and 'LONGITUDE' in c), None)
     
     if col_coords:
-        # Separa a coluna combinada "LATITUDE, LONGITUDE"
         df[['LATITUDE', 'LONGITUDE']] = df[col_coords].astype(str).str.split(',', expand=True)
         df['LATITUDE'] = pd.to_numeric(df['LATITUDE'].str.strip(), errors='coerce')
         df['LONGITUDE'] = pd.to_numeric(df['LONGITUDE'].str.strip(), errors='coerce')
     else:
-        # Garante a conversão para número caso estejam em colunas separadas
         if 'LATITUDE' in df.columns:
             df['LATITUDE'] = pd.to_numeric(df['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
         if 'LONGITUDE' in df.columns:
@@ -48,7 +47,7 @@ def carregar_dados():
 
 df = carregar_dados()
 
-# Sidebar e Busca
+# Sidebar e Pesquisa
 st.sidebar.header("🔍 Pesquisa")
 busca = st.sidebar.text_input("Filtrar por Local ou Seção:")
 
