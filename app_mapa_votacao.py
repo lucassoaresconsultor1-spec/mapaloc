@@ -1,16 +1,19 @@
 import os
 import glob
 import re
+import numpy as np
 import pandas as pd
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
 from folium.plugins import Fullscreen
+from sklearn.cluster import KMeans
+from scipy.spatial import ConvexHull
 
 st.set_page_config(page_title="Mapa de Votação - Araruama", page_icon="🗺️", layout="wide")
 
-st.title("📍 Mapa de Locais de Votação e Seções")
-st.markdown("Visão interativa da 92ª Zona Eleitoral de Araruama.")
+st.title("📍 Mapa de Locais de Votação por Zonas e Áreas")
+st.markdown("Divisão inteligente dos pontos em 20 zonas geográficas com manchas de cobertura.")
 
 def carregar_dados():
     arquivos_tsv = glob.glob("*.tsv")
@@ -72,7 +75,7 @@ def carregar_dados():
     col_secao = next((c for c in df.columns if 'SEÇ' in c or 'SEC' in c), 'SEÇÕES')
     col_link = next((c for c in df.columns if 'LINK' in c or 'MAPA' in c or 'URL' in c), 'LINK')
 
-    # Registro forçado da Praia Seca
+    # Registro garantido da Praia Seca
     praia_seca = pd.DataFrame([{
         col_local: "PÇA E. COMTE. SÉRGIO RIBEIRO (PRAIA SECA)",
         col_secao: "Praia Seca",
@@ -81,7 +84,6 @@ def carregar_dados():
         col_link: "https://maps.app.goo.gl/ohsy6xAmdXSqJV4g8?g_st=ac"
     }])
 
-    # Garante inclusão evitando duplicatas
     if not df.empty and col_local in df.columns:
         df = df[~df[col_local].astype(str).str.contains("SÉRGIO RIBEIRO", case=False, na=False)]
     
@@ -91,19 +93,42 @@ def carregar_dados():
 
 df = carregar_dados()
 
-# Colunas identificadas
 col_local = next((c for c in df.columns if 'LOCAL' in c), 'LOCAIS DE VOTAÇÃO')
 col_secao = next((c for c in df.columns if 'SEÇ' in c or 'SEC' in c), 'SEÇÕES')
 col_link = next((c for c in df.columns if 'LINK' in c or 'MAPA' in c or 'URL' in c), 'LINK')
 
-# --- CAMPO DE PESQUISA UNIFICADO ---
+df_valid = df.dropna(subset=['LATITUDE', 'LONGITUDE']).copy()
+
+# --- DIVISÃO EM 20 ZONAS VIA K-MEANS ---
+n_clusters = min(20, len(df_valid))
+
+if n_clusters > 0:
+    coords = df_valid[['LATITUDE', 'LONGITUDE']].values
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10).fit(coords)
+    df_valid['ZONA'] = kmeans.labels_ + 1
+else:
+    df_valid['ZONA'] = 1
+
+# Paleta com 20 cores distintas em código HEX
+CORES_ZONAS = [
+    '#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', 
+    '#911eb4', '#46f0f0', '#f032e6', '#bcfd4c', '#fabebe', 
+    '#008080', '#e6beff', '#9a6324', '#fffac8', '#800000', 
+    '#aaffc3', '#808000', '#ffd8b1', '#000075', '#808080'
+]
+
+# --- PAINEL LATERAL DE OPÇÕES ---
+st.sidebar.header("⚙️ Opções de Zonas")
+mostrar_manchas = st.sidebar.checkbox("Mostrar manchas/polígonos das Zonas", value=True)
+zona_filtro = st.sidebar.selectbox("Filtrar por Zona:", ["Todas as Zonas"] + [f"Zona {i}" for i in range(1, n_clusters + 1)])
+
+# --- CAMPO DE PESQUISA ---
 busca = st.text_input(
     "🔍 Pesquisar por Nome do Local ou Número da Seção:", 
-    placeholder="Digite o nome da escola ou o número da seção (ex: Sérgio Ribeiro, Praia Seca, Unilagos, 155...)"
+    placeholder="Digite o nome da escola ou o número da seção..."
 )
 
-# --- FILTRAGEM DOS DADOS ---
-df_filtrado = df.copy()
+df_filtrado = df_valid.copy()
 
 if busca.strip():
     termo = busca.strip()
@@ -112,22 +137,22 @@ if busca.strip():
         df_filtrado[col_secao].astype(str).str.contains(termo, case=False, na=False)
     ]
 
-df_mapa = df_filtrado.dropna(subset=['LATITUDE', 'LONGITUDE'])
+if zona_filtro != "Todas as Zonas":
+    num_z = int(zona_filtro.replace("Zona ", ""))
+    df_filtrado = df_filtrado[df_filtrado['ZONA'] == num_z]
 
-st.metric("Total de Locais Exibidos", f"{len(df_mapa)} de {len(df)}")
+st.metric("Total de Locais Exibidos", f"{len(df_filtrado)} de {len(df_valid)}")
 
-# Ajuste automático do centro e zoom do mapa
-if not df_mapa.empty:
-    centro_lat = df_mapa['LATITUDE'].mean()
-    centro_lon = df_mapa['LONGITUDE'].mean()
-    zoom_inicial = 15 if busca.strip() else 11
+if not df_filtrado.empty:
+    centro_lat = df_filtrado['LATITUDE'].mean()
+    centro_lon = df_filtrado['LONGITUDE'].mean()
+    zoom_inicial = 14 if (busca.strip() or zona_filtro != "Todas as Zonas") else 11
 else:
     centro_lat, centro_lon = -22.8712, -42.3415
     zoom_inicial = 11
 
 m = folium.Map(location=[centro_lat, centro_lon], zoom_start=zoom_inicial, tiles="OpenStreetMap")
 
-# Botão de Tela Cheia
 Fullscreen(
     position="topright",
     title="Expandir Mapa",
@@ -135,17 +160,56 @@ Fullscreen(
     force_separate_button=True
 ).add_to(m)
 
-# Marcadores no mapa
-for _, row in df_mapa.iterrows():
+# DESENHAR MANCHAS DA COBERTURA GEOGRÁFICA DE CADA ZONA
+if mostrar_manchas:
+    zonas_desenhar = df_filtrado['ZONA'].unique() if zona_filtro != "Todas as Zonas" else range(1, n_clusters + 1)
+    
+    for z in zonas_desenhar:
+        pts = df_valid[df_valid['ZONA'] == z][['LATITUDE', 'LONGITUDE']].values
+        cor = CORES_ZONAS[(z - 1) % len(CORES_ZONAS)]
+        
+        if len(pts) >= 3:
+            hull = ConvexHull(pts)
+            hull_pts = pts[hull.vertices]
+            polygon_coords = [[pt[0], pt[1]] for pt in hull_pts]
+            
+            folium.Polygon(
+                locations=polygon_coords,
+                color=cor,
+                fill=True,
+                fill_color=cor,
+                fill_opacity=0.22,
+                weight=2,
+                popup=f"Mancha Geográfica - Zona {z}"
+            ).add_to(m)
+        elif len(pts) > 0:
+            for pt in pts:
+                folium.Circle(
+                    location=[pt[0], pt[1]],
+                    radius=500,
+                    color=cor,
+                    fill=True,
+                    fill_color=cor,
+                    fill_opacity=0.25,
+                    popup=f"Zona {z}"
+                ).add_to(m)
+
+# EXIBIR OS MARCADORES COLORIDOS DE CADA LOCAL
+for _, row in df_filtrado.iterrows():
     lat = float(row['LATITUDE'])
     lon = float(row['LONGITUDE'])
     local = row.get(col_local, 'Local de Votação')
     secoes = row.get(col_secao, 'N/A')
+    zona_num = int(row['ZONA'])
+    cor_zona = CORES_ZONAS[(zona_num - 1) % len(CORES_ZONAS)]
     link = row.get(col_link, f"https://www.google.com/maps/search/?api=1&query={lat},{lon}")
 
     popup_html = f"""
-    <div style="font-family: Arial, sans-serif; font-size: 13px; width: 220px;">
-        <h4 style="margin: 0 0 5px 0; color: #1E88E5;">{local}</h4>
+    <div style="font-family: Arial, sans-serif; font-size: 13px; width: 230px;">
+        <span style="background-color: {cor_zona}; color: white; padding: 3px 8px; border-radius: 10px; font-weight: bold; font-size: 11px;">
+            ZONA {zona_num}
+        </span>
+        <h4 style="margin: 8px 0 5px 0; color: #1E88E5;">{local}</h4>
         <p style="margin: 0 0 10px 0;"><b>Seções:</b> {secoes}</p>
         <a href="{link}" target="_blank" 
            style="background-color: #28a745; color: white; padding: 6px 12px; 
@@ -156,13 +220,17 @@ for _, row in df_mapa.iterrows():
     </div>
     """
 
-    folium.Marker(
+    folium.CircleMarker(
         location=[lat, lon],
+        radius=9,
+        color="#000000",
+        weight=1,
+        fill=True,
+        fill_color=cor_zona,
+        fill_opacity=0.9,
         popup=folium.Popup(popup_html, max_width=280),
-        tooltip=str(local),
-        icon=folium.Icon(color="blue", icon="info-sign")
+        tooltip=f"[Zona {zona_num}] {local}"
     ).add_to(m)
 
-# Atualização dinâmica da tela
-map_key = f"map_{busca.strip()}_{len(df_mapa)}"
+map_key = f"map_{busca.strip()}_{zona_filtro}_{len(df_filtrado)}"
 st_folium(m, width="100%", height=550, key=map_key, returned_objects=[])
