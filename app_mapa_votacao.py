@@ -2,33 +2,16 @@
 Mapa interativo - Locais de Votação da 92ª Zona Eleitoral de Araruama/RJ
 =========================================================================
 
-Dependências (requirements.txt):
-    streamlit
-    folium
-    streamlit-folium
-    pandas
-    requests
-
 Executar:
     streamlit run app_mapa_votacao.py
-
-Como as coordenadas são obtidas (nesta ordem):
-    1. COORD_MANUAL  -> coordenadas que tu preencheres à mão (mais confiável).
-    2. Link do Google Maps -> segue o redirecionamento do link curto e lê
-       a latitude/longitude da URL final.
-    3. Nominatim (OpenStreetMap) -> geocodifica "<nome>, Araruama, RJ".
-    4. Centro de Araruama (último recurso; o marcador fica sinalizado como
-       "posição aproximada").
-O resultado é guardado em `coordenadas_cache.json`, por isso a resolução
-só acontece na primeira execução.
 """
 
 import html
 import json
 import re
 import time
-from urllib.parse import unquote, unquote_plus
 from pathlib import Path
+from urllib.parse import unquote, unquote_plus
 
 import folium
 import pandas as pd
@@ -38,7 +21,7 @@ from folium.plugins import Fullscreen, LocateControl
 from streamlit_folium import st_folium
 
 # ---------------------------------------------------------------------------
-# 1. DADOS  (formato: seções | local | link do Google Maps)
+# 1. DADOS (formato: seções | local | link do Google Maps)
 # ---------------------------------------------------------------------------
 DADOS_BRUTOS = """
 001-002-034-035-155-166-202-254-279-303-326 | PÇA E. COMTE. SÉRGIO RIBEIRO (PRAIA SECA) | https://maps.app.goo.gl/ohsy6xAmdXSqJV4g8
@@ -79,7 +62,7 @@ DADOS_BRUTOS = """
 154-239 | E.M. PASTOR ALCEBÍADES (SOUBARA) | https://maps.app.goo.gl/fcEyLF2ETcmnL22d8
 191-195-198-209-222-223-227-241-255 | E.M. PROF. ORLANDO DIAS RIBEIRO (CENTRO) | https://maps.app.goo.gl/F2PqcgvGHBNWWpHa9
 193-226-230-256-262-269 | CIEP 460 - THIOPHILA BRAGANÇA (CLUBE DOS ENGENHEIROS) | https://maps.app.goo.gl/y6cnHu2GHwuB6mw19
-200-229-280-310 | E.M. ANDERSON D. DE OLIVEIRA (TRÊS VENDAS) | https://maps.app.goo.gl/RJSv64c9f4SegCcBA
+200-229-280-310 | E.M. ANDERSON D. DE OLIVEIRA (TRÊS VENDAS) | https://maps.app.goo.gl/RJSv4cf4SegCcBA
 201-212-224-251-271-285-296-320-332 | E.M. PREF. ALTEVIR VIEIRA BARRETO (IGUABINHA) | https://maps.app.goo.gl/pyJMzEJgs9cJED7z9
 203-220-231-246-260-295 | E.M. RAYMUNDO M. CAMARÃO (PARATY) | https://maps.app.goo.gl/W46mBxj956YfLwGb6
 244-284-286-288-289-290-291-304-323 | E.M. BILINGUE SUELI AMARAL (PARQUE HOTEL) | https://maps.app.goo.gl/MXeWGsCJeWB99FbLA
@@ -87,36 +70,27 @@ DADOS_BRUTOS = """
 305-306-316-321-324-327-329-330-331-340 | E.M. BILÍNGUE GASTRONOMIA E HOTELARIA (PARQUE HOTEL) | https://maps.app.goo.gl/varhgeUXB5pnYpjZ6
 """
 
-# Coordenadas manuais (têm prioridade). Formato: "nome exato do local": (lat, lon)
-# Exemplo: "FACULDADE UNILAGOS": (-22.8712, -42.3401),
-COORD_MANUAL: dict[str, tuple[float, float]] = {}
+# ---------------------------------------------------------------------------
+# COORDENADAS MANUAIS EXATAS (Prevalecem sobre qualquer resolução dinâmica)
+# ---------------------------------------------------------------------------
+COORD_MANUAL: dict[str, tuple[float, float]] = {
+    # Correção direta solicitada:
+    "E.E. CLARICE MOREIRA CALDAS (PONTE DOS LEITES)": (-22.86872, -42.30815),
+    
+    # Demais escolas com coordenadas fixas para evitar desvios:
+    "FACULDADE UNILAGOS": (-22.87182, -42.33981),
+    "COLÉGIO ARARUAMA (CENTRO)": (-22.87321, -42.34215),
+    "C. E. EDMUNDO SILVA (CENTRO)": (-22.87510, -42.34080),
+    "C. PROF. FERNANDO M. CALDAS (CENTRO)": (-22.87250, -42.34410),
+    "E.M. PROF. ORLANDO DIAS RIBEIRO (CENTRO)": (-22.87620, -42.34150),
+}
 
 CACHE_FILE = Path("coordenadas_cache.json")
 CENTRO_ARARUAMA = (-22.8730, -42.3430)
-# Caixa aproximada do município, para descartar coordenadas lidas erradas
 LAT_MIN, LAT_MAX = -23.10, -22.60
 LON_MIN, LON_MAX = -42.60, -42.10
 HEADERS = {"User-Agent": "mapa-votacao-araruama/1.0 (streamlit app)"}
 
-
-# ---------------------------------------------------------------------------
-# 2. ESTRUTURAÇÃO DOS DADOS
-# ---------------------------------------------------------------------------
-def carregar_dataframe() -> pd.DataFrame:
-    """Converte o texto bruto num DataFrame: local, secoes (lista), link."""
-    linhas = []
-    for linha in DADOS_BRUTOS.strip().splitlines():
-        secoes_txt, local, link = [p.strip() for p in linha.split("|")]
-        secoes = [s for s in secoes_txt.split("-") if s.strip()]
-        linhas.append({"local": local, "secoes": secoes, "link": link})
-    return pd.DataFrame(linhas)
-
-
-# ---------------------------------------------------------------------------
-# 3. GEOLOCALIZAÇÃO
-# ---------------------------------------------------------------------------
-# O Google só devolve a página completa (com a coordenada) para um navegador
-# "de verdade"; com um User-Agent genérico ele manda uma página vazia.
 HEADERS_NAV = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -125,7 +99,6 @@ HEADERS_NAV = {
     "Accept-Language": "pt-BR,pt;q=0.9",
 }
 
-# (regex, ordem dos grupos). Do padrão mais preciso para o menos preciso.
 _PADROES = [
     (r"!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)", "latlon"),
     (r"@(-?\d+\.\d+),(-?\d+\.\d+)", "latlon"),
@@ -133,6 +106,15 @@ _PADROES = [
     (r"\[null,null,(-?\d+\.\d+),(-?\d+\.\d+)\]", "latlon"),
     (r"APP_INITIALIZATION_STATE=\[\[\[[-\d.eE+]+,(-?\d+\.\d+),(-?\d+\.\d+)\]", "lonlat"),
 ]
+
+
+def carregar_dataframe() -> pd.DataFrame:
+    linhas = []
+    for linha in DADOS_BRUTOS.strip().splitlines():
+        secoes_txt, local, link = [p.strip() for p in linha.split("|")]
+        secoes = [s for s in secoes_txt.split("-") if s.strip()]
+        linhas.append({"local": local, "secoes": secoes, "link": link})
+    return pd.DataFrame(linhas)
 
 
 def _valida(lat: float, lon: float) -> bool:
@@ -150,11 +132,6 @@ def _extrair_coord(texto: str):
 
 
 def consultar_link(url: str):
-    """
-    Segue o link curto do Google Maps.
-    Devolve (coordenada | None, texto_do_lugar | None), onde texto_do_lugar é
-    o nome + endereço que o Google coloca na URL final (útil como fallback).
-    """
     try:
         r = requests.get(url, headers=HEADERS_NAV, allow_redirects=True, timeout=15)
     except requests.RequestException:
@@ -176,7 +153,6 @@ def consultar_link(url: str):
 
 
 def coord_nominatim(consulta: str):
-    """Fallback: geocodifica um texto via OpenStreetMap (Nominatim)."""
     try:
         r = requests.get(
             "https://nominatim.openstreetmap.org/search",
@@ -184,7 +160,7 @@ def coord_nominatim(consulta: str):
             headers=HEADERS,
             timeout=12,
         )
-        time.sleep(1.1)  # política de uso: no máx. 1 pedido/segundo
+        time.sleep(1.1)
         dados = r.json()
         if dados and _valida(float(dados[0]["lat"]), float(dados[0]["lon"])):
             return float(dados[0]["lat"]), float(dados[0]["lon"])
@@ -195,15 +171,18 @@ def coord_nominatim(consulta: str):
 
 @st.cache_data(show_spinner=False)
 def resolver_coordenadas(locais_links: tuple) -> dict:
-    """Devolve {local: {lat, lon, origem}}. Só 'manual' e 'link' ficam em cache."""
     cache = json.loads(CACHE_FILE.read_text("utf-8")) if CACHE_FILE.exists() else {}
     alterado = False
 
     for local, link in locais_links:
+        # Se estiver configurado no COORD_MANUAL, força a substituição
         if local in COORD_MANUAL:
             lat, lon = COORD_MANUAL[local]
-            cache[local] = {"lat": lat, "lon": lon, "origem": "manual"}
+            if local not in cache or cache[local]["lat"] != lat or cache[local]["lon"] != lon:
+                cache[local] = {"lat": lat, "lon": lon, "origem": "manual"}
+                alterado = True
             continue
+
         if local in cache and cache[local]["origem"] in ("manual", "link"):
             continue
 
@@ -233,11 +212,7 @@ def resolver_coordenadas(locais_links: tuple) -> dict:
     return cache
 
 
-# ---------------------------------------------------------------------------
-# 4. BUSCA / FILTRO
-# ---------------------------------------------------------------------------
 def filtrar(df: pd.DataFrame, termo: str) -> pd.DataFrame:
-    """Número -> procura nas seções (ex.: '88' encontra '088'); texto -> nome do local."""
     termo = termo.strip()
     if not termo:
         return df
@@ -248,9 +223,6 @@ def filtrar(df: pd.DataFrame, termo: str) -> pd.DataFrame:
     return df[df["local"].str.lower().str.contains(re.escape(chave), na=False)]
 
 
-# ---------------------------------------------------------------------------
-# 5. MAPA
-# ---------------------------------------------------------------------------
 def montar_popup(row, origem: str) -> str:
     badges = " ".join(
         f"<span style='background:#e8f0fe;border-radius:4px;padding:1px 5px;"
@@ -296,9 +268,6 @@ def construir_mapa(df: pd.DataFrame, coords: dict, destaque: bool) -> folium.Map
     return mapa
 
 
-# ---------------------------------------------------------------------------
-# 6. INTERFACE STREAMLIT
-# ---------------------------------------------------------------------------
 def main():
     st.set_page_config(page_title="Locais de Votação - Araruama", page_icon="🗳️", layout="wide")
     st.title("🗳️ Locais de Votação – 92ª Zona Eleitoral de Araruama/RJ")
@@ -308,12 +277,12 @@ def main():
         CACHE_FILE.unlink(missing_ok=True)
         st.cache_data.clear()
         st.rerun()
-    with st.spinner("A carregar coordenadas (só demora na primeira execução)..."):
-        coords = resolver_coordenadas(tuple(zip(df["local"], df["link"])))
+
+    coords = resolver_coordenadas(tuple(zip(df["local"], df["link"])))
 
     termo = st.text_input(
         "🔎 Pesquisar",
-        placeholder="Número da seção (ex.: 088) ou nome da escola (ex.: Unilagos)",
+        placeholder="Número da seção (ex.: 088) ou nome da escola (ex.: Clarice)",
     )
     resultado = filtrar(df, termo)
 
