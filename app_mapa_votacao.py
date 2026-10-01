@@ -1,5 +1,6 @@
 import os
 import glob
+import re
 import pandas as pd
 import streamlit as st
 import folium
@@ -28,20 +29,49 @@ def carregar_dados():
         st.error("Nenhum ficheiro de dados encontrado na pasta do repositório.")
         st.stop()
 
+    # Normaliza nomes das colunas
     df.columns = [str(col).strip().upper() for col in df.columns]
 
-    # Processa a coluna de coordenadas combinadas se existir
-    col_coords = next((c for c in df.columns if 'LATITUDE' in c and 'LONGITUDE' in c), None)
-    
-    if col_coords:
-        df[['LATITUDE', 'LONGITUDE']] = df[col_coords].astype(str).str.split(',', expand=True)
-        df['LATITUDE'] = pd.to_numeric(df['LATITUDE'].str.strip(), errors='coerce')
-        df['LONGITUDE'] = pd.to_numeric(df['LONGITUDE'].str.strip(), errors='coerce')
-    else:
-        if 'LATITUDE' in df.columns:
-            df['LATITUDE'] = pd.to_numeric(df['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
-        if 'LONGITUDE' in df.columns:
-            df['LONGITUDE'] = pd.to_numeric(df['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
+    lats = []
+    lons = []
+
+    # Procura coluna combinada "LATITUDE, LONGITUDE" ou colunas separadas
+    col_comb = next((c for c in df.columns if 'LAT' in c and 'LON' in c), None)
+    col_lat = next((c for c in df.columns if 'LAT' in c and 'LON' not in c), None)
+    col_lon = next((c for c in df.columns if 'LON' in c and 'LAT' not in c), None)
+
+    for _, row in df.iterrows():
+        lat, lon = None, None
+        
+        # 1. Tenta extrair da coluna combinada
+        if col_comb and pd.notnull(row[col_comb]):
+            texto = str(row[col_comb]).replace(';', ',')
+            partes = texto.split(',')
+            if len(partes) >= 2:
+                try:
+                    lat = float(partes[0].strip())
+                    lon = float(partes[1].strip())
+                except ValueError:
+                    pass
+                    
+        # 2. Tenta extrair das colunas separadas se ainda não encontrou
+        if lat is None and col_lat and pd.notnull(row[col_lat]):
+            try:
+                lat = float(str(row[col_lat]).replace(',', '.').strip())
+            except ValueError:
+                pass
+                
+        if lon is None and col_lon and pd.notnull(row[col_lon]):
+            try:
+                lon = float(str(row[col_lon]).replace(',', '.').strip())
+            except ValueError:
+                pass
+
+        lats.append(lat)
+        lons.append(lon)
+
+    df['LATITUDE'] = lats
+    df['LONGITUDE'] = lons
 
     return df
 
@@ -62,6 +92,7 @@ if busca:
 else:
     df_filtrado = df.copy()
 
+# Filtra registos com coordenadas válidas
 df_mapa = df_filtrado.dropna(subset=['LATITUDE', 'LONGITUDE'])
 
 st.metric("Total de Locais Mapeados", f"{len(df_mapa)} de {len(df)}")
