@@ -23,9 +23,11 @@ O resultado é guardado em `coordenadas_cache.json`, por isso a resolução
 só acontece na primeira execução.
 """
 
+import html
 import json
 import re
 import time
+from urllib.parse import unquote, unquote_plus
 from pathlib import Path
 
 import folium
@@ -113,10 +115,23 @@ def carregar_dataframe() -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # 3. GEOLOCALIZAÇÃO
 # ---------------------------------------------------------------------------
+# O Google só devolve a página completa (com a coordenada) para um navegador
+# "de verdade"; com um User-Agent genérico ele manda uma página vazia.
+HEADERS_NAV = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "pt-BR,pt;q=0.9",
+}
+
+# (regex, ordem dos grupos). Do padrão mais preciso para o menos preciso.
 _PADROES = [
-    r"!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)",
-    r"@(-?\d+\.\d+),(-?\d+\.\d+)",
-    r"[?&](?:q|ll|center)=(-?\d+\.\d+)(?:,|%2C)(-?\d+\.\d+)",
+    (r"!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)", "latlon"),
+    (r"@(-?\d+\.\d+),(-?\d+\.\d+)", "latlon"),
+    (r"[?&;](?:q|ll|center)=(-?\d+\.\d+)(?:,|%2C|%2c)(-?\d+\.\d+)", "latlon"),
+    (r"\[null,null,(-?\d+\.\d+),(-?\d+\.\d+)\]", "latlon"),
+    (r"APP_INITIALIZATION_STATE=\[\[\[[-\d.eE+]+,(-?\d+\.\d+),(-?\d+\.\d+)\]", "lonlat"),
 ]
 
 
@@ -124,28 +139,48 @@ def _valida(lat: float, lon: float) -> bool:
     return LAT_MIN <= lat <= LAT_MAX and LON_MIN <= lon <= LON_MAX
 
 
-def coord_do_link(url: str):
-    """Segue o link curto do Google Maps e extrai lat/lon da URL final."""
-    try:
-        r = requests.get(url, headers=HEADERS, allow_redirects=True, timeout=12)
-        alvos = [r.url] + [h.headers.get("Location", "") for h in r.history] + [r.text]
-        for texto in alvos:
-            for padrao in _PADROES:
-                m = re.search(padrao, texto)
-                if m and _valida(float(m.group(1)), float(m.group(2))):
-                    return float(m.group(1)), float(m.group(2))
-    except requests.RequestException:
-        pass
+def _extrair_coord(texto: str):
+    for padrao, ordem in _PADROES:
+        for m in re.finditer(padrao, texto):
+            a, b = float(m.group(1)), float(m.group(2))
+            lat, lon = (a, b) if ordem == "latlon" else (b, a)
+            if _valida(lat, lon):
+                return lat, lon
     return None
 
 
-def coord_nominatim(local: str):
-    """Fallback: geocodifica o nome do local via OpenStreetMap (Nominatim)."""
-    consulta = re.sub(r"\(.*?\)", "", local).strip()
+def consultar_link(url: str):
+    """
+    Segue o link curto do Google Maps.
+    Devolve (coordenada | None, texto_do_lugar | None), onde texto_do_lugar é
+    o nome + endereço que o Google coloca na URL final (útil como fallback).
+    """
+    try:
+        r = requests.get(url, headers=HEADERS_NAV, allow_redirects=True, timeout=15)
+    except requests.RequestException:
+        return None, None
+
+    corpo = html.unescape(r.text).replace("\\u003d", "=").replace("\\u0026", "&")
+    alvos = [unquote(r.url)] + [unquote(h.headers.get("Location", "")) for h in r.history] + [corpo]
+    coord = None
+    for texto in alvos:
+        coord = _extrair_coord(texto)
+        if coord:
+            break
+
+    lugar = None
+    m = re.search(r"/maps/place/([^/]+)/", r.url)
+    if m:
+        lugar = unquote_plus(m.group(1))
+    return coord, lugar
+
+
+def coord_nominatim(consulta: str):
+    """Fallback: geocodifica um texto via OpenStreetMap (Nominatim)."""
     try:
         r = requests.get(
             "https://nominatim.openstreetmap.org/search",
-            params={"q": f"{consulta}, Araruama, RJ, Brasil", "format": "json", "limit": 1},
+            params={"q": f"{consulta}, Brasil", "format": "json", "limit": 1},
             headers=HEADERS,
             timeout=12,
         )
@@ -160,7 +195,7 @@ def coord_nominatim(local: str):
 
 @st.cache_data(show_spinner=False)
 def resolver_coordenadas(locais_links: tuple) -> dict:
-    """Devolve {local: {lat, lon, origem}} usando cache em disco."""
+    """Devolve {local: {lat, lon, origem}}. Só 'manual' e 'link' ficam em cache."""
     cache = json.loads(CACHE_FILE.read_text("utf-8")) if CACHE_FILE.exists() else {}
     alterado = False
 
@@ -169,14 +204,27 @@ def resolver_coordenadas(locais_links: tuple) -> dict:
             lat, lon = COORD_MANUAL[local]
             cache[local] = {"lat": lat, "lon": lon, "origem": "manual"}
             continue
-        if local in cache and cache[local]["origem"] != "aproximada":
+        if local in cache and cache[local]["origem"] in ("manual", "link"):
             continue
 
-        res, origem = coord_do_link(link), "link"
+        res, lugar = consultar_link(link)
+        origem = "link"
+
         if res is None:
-            res, origem = coord_nominatim(local), "geocodificação"
+            consultas = []
+            if lugar:
+                consultas += [lugar, lugar.split(" - ", 1)[-1]]
+            nome_limpo = re.sub(r"\(.*?\)", "", local).strip()
+            consultas.append(f"{nome_limpo}, Araruama, RJ")
+            for q in consultas:
+                res = coord_nominatim(q)
+                if res:
+                    origem = "geocodificação"
+                    break
+
         if res is None:
             res, origem = CENTRO_ARARUAMA, "aproximada"
+
         cache[local] = {"lat": res[0], "lon": res[1], "origem": origem}
         alterado = True
 
@@ -256,6 +304,10 @@ def main():
     st.title("🗳️ Locais de Votação – 92ª Zona Eleitoral de Araruama/RJ")
 
     df = carregar_dataframe()
+    if st.sidebar.button("🔄 Recalcular coordenadas"):
+        CACHE_FILE.unlink(missing_ok=True)
+        st.cache_data.clear()
+        st.rerun()
     with st.spinner("A carregar coordenadas (só demora na primeira execução)..."):
         coords = resolver_coordenadas(tuple(zip(df["local"], df["link"])))
 
@@ -293,12 +345,14 @@ def main():
             },
         )
 
-    aprox = [l for l in resultado["local"] if coords[l]["origem"] == "aproximada"]
-    if aprox:
-        st.caption(
-            f"⚠ {len(aprox)} local(is) sem coordenada exata. "
-            "Preenche `COORD_MANUAL` no código para corrigir."
+    with st.expander("🧭 Origem das coordenadas (conferência)"):
+        conf = pd.DataFrame(
+            [{"local": l, "origem": c["origem"], "lat": c["lat"], "lon": c["lon"]}
+             for l, c in coords.items()]
         )
+        st.caption("link = exata (do Google Maps) · manual = tua correção · "
+                   "geocodificação/aproximada = conferir")
+        st.dataframe(conf, hide_index=True, use_container_width=True)
 
 
 if __name__ == "__main__":
