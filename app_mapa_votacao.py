@@ -74,59 +74,44 @@ def carregar_dados():
 
 df = carregar_dados()
 
-# Colunas identificadas no DataFrame
+# Colunas identificadas
 col_local = next((c for c in df.columns if 'LOCAL' in c), 'LOCAIS DE VOTAÇÃO')
 col_secao = next((c for c in df.columns if 'SEÇ' in c or 'SEC' in c), 'SEÇÕES')
 col_link = next((c for c in df.columns if 'LINK' in c or 'MAPA' in c or 'URL' in c), None)
 
-# Extração da lista de seções para o menu suspenso
-todas_secoes = set()
-for secoes_str in df[col_secao].dropna().astype(str):
-    numeros = re.findall(r'\d+', secoes_str)
-    todas_secoes.update(numeros)
-
-secoes_ordenadas = sorted(list(todas_secoes), key=lambda x: int(x) if x.isdigit() else x)
-
-# --- BARRA DE PESQUISA ACIMA DO MAPA ---
-st.subheader("🔍 Pesquisar Local de Votação")
-col_busca1, col_busca2 = st.columns([2, 1])
-
-with col_busca1:
-    busca_escola = st.text_input("Buscar por Nome da Escola / Local:", placeholder="Ex: André Gomes, Unilagos, etc.")
-
-with col_busca2:
-    secao_selecionada = st.selectbox("Filtrar por Número da Seção:", ["Todas"] + secoes_ordenadas)
+# --- CAMPO DE PESQUISA UNIFICADO ACIMA DO MAPA ---
+busca = st.text_input(
+    "🔍 Pesquisar por Nome do Local ou Número da Seção:", 
+    placeholder="Digite o nome da escola ou o número da seção (ex: Unilagos, 002, 155...)"
+)
 
 # --- FILTRAGEM DOS DADOS ---
 df_filtrado = df.copy()
 
-if busca_escola:
+if busca.strip():
+    termo = busca.strip()
+    # Filtra se o termo estiver presente no NOME DO LOCAL OU nas SEÇÕES
     df_filtrado = df_filtrado[
-        df_filtrado[col_local].astype(str).str.contains(busca_escola, case=False, na=False)
-    ]
-
-if secao_selecionada != "Todas":
-    df_filtrado = df_filtrado[
-        df_filtrado[col_secao].astype(str).apply(lambda x: re.search(r'\b' + re.escape(secao_selecionada) + r'\b', x) is not None)
+        df_filtrado[col_local].astype(str).str.contains(termo, case=False, na=False) |
+        df_filtrado[col_secao].astype(str).str.contains(termo, case=False, na=False)
     ]
 
 df_mapa = df_filtrado.dropna(subset=['LATITUDE', 'LONGITUDE'])
 
-# Indicador de resultados exibidos
 st.metric("Total de Locais Exibidos", f"{len(df_mapa)} de {len(df)}")
 
-# Ajuste automático do centro e zoom do mapa conforme a pesquisa
+# Ajuste automático de centro e zoom conforme a busca
 if not df_mapa.empty:
     centro_lat = df_mapa['LATITUDE'].mean()
     centro_lon = df_mapa['LONGITUDE'].mean()
-    zoom_inicial = 15 if (busca_escola or secao_selecionada != "Todas") else 12
+    zoom_inicial = 15 if busca.strip() else 12
 else:
     centro_lat, centro_lon = -22.8712, -42.3415
     zoom_inicial = 12
 
 m = folium.Map(location=[centro_lat, centro_lon], zoom_start=zoom_inicial, tiles="OpenStreetMap")
 
-# Plugin de Tela Cheia
+# Botão de Tela Cheia
 Fullscreen(
     position="topright",
     title="Expandir Mapa",
@@ -134,7 +119,7 @@ Fullscreen(
     force_separate_button=True
 ).add_to(m)
 
-# Inserção dos marcadores fixos
+# Marcadores fixos sem agrupamento
 for _, row in df_mapa.iterrows():
     lat = float(row['LATITUDE'])
     lon = float(row['LONGITUDE'])
@@ -162,6 +147,6 @@ for _, row in df_mapa.iterrows():
         icon=folium.Icon(color="blue", icon="info-sign")
     ).add_to(m)
 
-# Key dinâmica para atualização instantânea no renderizador do Streamlit
-map_key = f"map_{busca_escola}_{secao_selecionada}_{len(df_mapa)}"
+# Key dinâmica para atualização instantânea da renderização no Streamlit
+map_key = f"map_{busca.strip()}_{len(df_mapa)}"
 st_folium(m, width="100%", height=550, key=map_key, returned_objects=[])
