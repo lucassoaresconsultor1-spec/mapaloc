@@ -7,7 +7,7 @@ import folium
 from streamlit_folium import st_folium
 from folium.plugins import Fullscreen
 
-st.set_page_config(page_title="Mapa de Votação - Araruama", page_icon="🗺️️", layout="wide")
+st.set_page_config(page_title="Mapa de Votação - Araruama", page_icon="🗺️", layout="wide")
 
 st.title("📍 Mapa de Locais de Votação e Seções")
 st.markdown("Visão interativa da 92ª Zona Eleitoral de Araruama.")
@@ -74,34 +74,59 @@ def carregar_dados():
 
 df = carregar_dados()
 
-# Sidebar e Pesquisa
-st.sidebar.header("🔍 Pesquisa")
-busca = st.sidebar.text_input("Filtrar por Local ou Seção:")
-
+# Identificação das colunas do DataFrame
 col_local = next((c for c in df.columns if 'LOCAL' in c), 'LOCAIS DE VOTAÇÃO')
 col_secao = next((c for c in df.columns if 'SEÇ' in c or 'SEC' in c), 'SEÇÕES')
+col_link = next((c for c in df.columns if 'LINK' in c or 'MAPA' in c or 'URL' in c), None)
 
-if busca:
-    df_filtrado = df[
-        df[col_local].astype(str).str.contains(busca, case=False, na=False) |
-        df[col_secao].astype(str).str.contains(busca, case=False, na=False)
+# --- SIDEBAR: OPÇÕES DE FILTRO E PESQUISA ---
+st.sidebar.header("🔍 Pesquisa e Filtros")
+
+# Pesquisa por Nome da Escola / Local
+busca_escola = st.sidebar.text_input("Buscar por Nome da Escola/Local:")
+
+# Monta a lista de todas as seções únicas para o Selectbox
+todas_secoes = set()
+for secoes_str in df[col_secao].dropna().astype(str):
+    # Extrai todos os números de seções da string
+    numeros = re.findall(r'\d+', secoes_str)
+    todas_secoes.update(numeros)
+
+secoes_ordenadas = sorted(list(todas_secoes), key=lambda x: int(x) if x.isdigit() else x)
+secao_selecionada = st.sidebar.selectbox("Filtrar por Seção Específica:", ["Todas"] + secoes_ordenadas)
+
+# Aplicação dos Filtros
+df_filtrado = df.copy()
+
+if busca_escola:
+    df_filtrado = df_filtrado[
+        df_filtrado[col_local].astype(str).str.contains(busca_escola, case=False, na=False)
     ]
-else:
-    df_filtrado = df.copy()
+
+if secao_selecionada != "Todas":
+    # Filtra mantendo apenas as linhas onde a seção aparece na string de seções
+    df_filtrado = df_filtrado[
+        df_filtrado[col_secao].astype(str).apply(lambda x: re.search(r'\b' + re.escape(secao_selecionada) + r'\b', x) is not None)
+    ]
 
 df_mapa = df_filtrado.dropna(subset=['LATITUDE', 'LONGITUDE'])
 
-st.metric("Total de Locais Mapeados", f"{len(df_mapa)} de {len(df)}")
+# Indicador no topo
+st.metric("Total de Locais Exibidos", f"{len(df_mapa)} de {len(df)}")
 
+# Cálculo do centro do mapa
 if not df_mapa.empty:
     centro_lat = df_mapa['LATITUDE'].mean()
     centro_lon = df_mapa['LONGITUDE'].mean()
+    zoom_inicial = 14 if (busca_escola or secao_selecionada != "Todas") else 12
 else:
     centro_lat, centro_lon = -22.8712, -42.3415
+    zoom_inicial = 12
 
-m = folium.Map(location=[centro_lat, centro_lon], zoom_start=12, tiles="OpenStreetMap")
+# Criação do Mapa Folium
+m = folium.Map(location=[centro_lat, centro_lon], zoom_start=zoom_inicial, tiles="OpenStreetMap")
 
-# Adiciona o botão de Tela Cheia no mapa
+# Plugin de Tela Cheia
 Fullscreen(
     position="topright",
     title="Expandir Mapa",
@@ -109,9 +134,7 @@ Fullscreen(
     force_separate_button=True
 ).add_to(m)
 
-col_link = next((c for c in df.columns if 'LINK' in c or 'MAPA' in c or 'URL' in c), None)
-
-# Adiciona os pontos diretamente no mapa, sem agrupamento
+# Adiciona todos os marcadores diretamente no mapa (sem agrupamento)
 for _, row in df_mapa.iterrows():
     lat = float(row['LATITUDE'])
     lon = float(row['LONGITUDE'])
