@@ -1,4 +1,6 @@
 import os
+import re
+import requests
 import pandas as pd
 import streamlit as st
 import folium
@@ -8,55 +10,43 @@ from folium.plugins import MarkerCluster
 st.set_page_config(page_title="Mapa de Votação - Araruama", page_icon="🗺️", layout="wide")
 
 st.title("📍 Mapa de Locais de Votação e Seções")
-st.markdown("Visão interativa da 92ª Zona Eleitoral de Araruama.")
+st.markdown("Visão interativa da 92ª Zona Eleitoral de Araruama com localizações oficiais.")
 
-# Coordenadas pré-mapeadas das escolas/locais de Araruama para evitar bloqueios do Google
-COORDENADAS_ARARUAMA = {
-    "PÇA E. COMTE. SÉRGIO RIBEIRO (PRAIA SECA)": (-22.93245, -42.30812),
-    "E. M. ANDRÉ GOMES (BANANEIRAS)": (-22.86012, -42.31245),
-    "FACULDADE UNILAGOS": (-22.87150, -42.33920),
-    "E. M. VER. MOYSES RAMALHO (VILA CAPRI)": (-22.87890, -42.32510),
-    "COLÉGIO ARARUAMA (CENTRO)": (-22.87320, -42.34210),
-    "C. E. EDMUNDO SILVA (CENTRO)": (-22.87410, -42.34080),
-    "E. M. E. FRANCISCO JOSÉ DE MARINS (MESTRE KIKO) – XV DE NOVEMBRO": (-22.88050, -42.33810),
-    "E.M.E. MARGARIDA TRINDADE DE DEUS (FAZENDINHA)": (-22.88210, -42.35020),
-    "E.E. CLARICE MOREIRA CALDAS (PONTE DOS LEITES)": (-22.85120, -42.31890),
-    "E. M. JOÃO BRITO DE SOUZA (JARDIM SÃO PAULO)": (-22.86540, -42.34810),
-    "PÇA E. M. PREF. AFRÂNIO VALLADARES - ITATIQUARA": (-22.83910, -42.29820),
-    "CIEP 253 - GUIMARÃES ROSA (EDUCANDÁRIO)": (-22.86820, -42.33120),
-    "ESCOLA PARATY (PARATY)": (-22.88910, -42.36100),
-    "E.M. FRANCISCO D. NETO (BOA VISTA)": (-22.84100, -42.35200),
-    "E.M. CELINA MESQUITA PEDROSA (IGUABINHA)": (-22.86100, -42.26100),
-    "E.M. TONINHO SENRA (REGAMÉ)": (-22.87950, -42.35820),
-    "E.M. DARCY RIBEIRO (PRAIA DO HOSPÍCIO)": (-22.88200, -42.33010),
-    "PÇA E. DR. FERNANDO CARVALHO (FAZENDINHA)": (-22.88120, -42.34900),
-    "E.M. BRUNNO NAMETALA (ENGENHO GRANDE)": (-22.83100, -42.36120),
-    "E.M. SARA URRUTIA BATISTA (ENGENHO NOVO)": (-22.84210, -42.37890),
-    "C. PROF. FERNANDO M. CALDAS (CENTRO)": (-22.87200, -42.34300),
-    "E. M. PROF. NAIR VALLADARES": (-22.87520, -42.34120),
-    "E. M. PRODÍGIO (PRODÍGIO)": (-22.78910, -42.39120),
-    "E.M. HONORINO COUTINHO (MORRO GRANDE)": (-22.81200, -42.38100),
-    "E. M. AGOSTINHO FRANCESCHI (AURORA)": (-22.82500, -42.37000),
-    "E. M. JERÔNIMO CARLOS (PARACATU)": (-22.79800, -42.35100),
-    "E. M. VER. EDEMUNDO PEREIRA DE SÁ CARVALHO - (LOT. SANTANA - SÃO VICENTE)": (-22.69800, -42.36200),
-    "E.M. PROF. PEDRO PAULO (SÃO VICENTE)": (-22.69100, -42.36800),
-    "E.M. FAUSTINA S. DE CARVALHO (NORIVAL CARVALHO - SÃO VICENTE)": (-22.68900, -42.37100),
-    "E.M. JOÃO AUGUSTO CHAVES (SOBRADINHO - SÃO VICENTE)": (-22.71200, -42.38100),
-    "CIEP 384 - GONÇALVES DIAS (SÃO VICENTE)": (-22.69500, -42.36500),
-    "E.M. JOSÉ CORRÊA DA FONSECA (SÃO VICENTE)": (-22.69200, -42.36900),
-    "E.M. NEDIR PAULO B. DA ROSA (POSSE)": (-22.75200, -42.32100),
-    "E.M. SINVAL PINTO DE FIGUEIREDO (MUTIRÃO)": (-22.86800, -42.35500),
-    "E.M. DR. JOÃO VASCONCELLOS (EDUCANDÁRIO)": (-22.86700, -42.33200),
-    "E.M. PASTOR ALCEBÍADES (SOUBARA)": (-22.76800, -42.31100),
-    "E.M. PROF. ORLANDO DIAS RIBEIRO (CENTRO)": (-22.87100, -42.34400),
-    "CIEP 460 - THIOPHILA BRAGANÇA (CLUBE DOS ENGENHEIROS)": (-22.88500, -42.32100),
-    "E.M. ANDERSON D. DE OLIVEIRA (TRÊS VENDAS)": (-22.81200, -42.29800),
-    "E.M. PREF. ALTEVIR VIEIRA BARRETO (IGUABINHA)": (-22.85900, -42.25800),
-    "E.M. RAYMUNDO M. CAMARÃO (PARATY)": (-22.88800, -42.36200),
-    "E.M. BILINGUE SUELI AMARAL (PARQUE HOTEL)": (-22.87900, -42.33500),
-    "C.E. SGT PM ANTONIO CARLOS DE OLIVEIRA DE MOURA (HOSPÍCIO)": (-22.88100, -42.32900),
-    "E.M. BILÍNGUE GASTRONOMIA E HOTELARIA (PARQUE HOTEL)": (-22.87800, -42.33600)
-}
+# Função para extrair lat/lon reais do link curto do Google Maps
+def extrair_coords_do_link(url):
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        r = requests.get(url, allow_redirects=True, headers=headers, timeout=6)
+        final_url = r.url
+        text = r.text
+
+        # Padrões comuns do Google Maps
+        patterns = [
+            r'@(-?\d+\.\d+),(-?\d+\.\d+)',
+            r'!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)',
+            r'ftid:[^!]*!2d(-?\d+\.\d+)!3d(-?\d+\.\d+)',
+            r'[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)',
+            r'/place/[^/]+/(-?\d+\.\d+),(-?\d+\.\d+)'
+        ]
+
+        for pat in patterns:
+            m = re.search(pat, final_url)
+            if m:
+                v1, v2 = float(m.group(1)), float(m.group(2))
+                # Validar se bate na região de Araruama/Região dos Lagos
+                if -23.5 < v1 < -22.0 and -43.0 < v2 < -41.5:
+                    return v1, v2
+                elif -23.5 < v2 < -22.0 and -43.0 < v1 < -41.5:
+                    return v2, v1
+
+        # Busca secundaria no HTML da página redirecionada
+        m_html = re.search(r'(-22\.\d{4,8}),\s*(-42\.\d{4,8})', text)
+        if m_html:
+            return float(m_html.group(1)), float(m_html.group(2))
+
+    except Exception:
+        pass
+    return None, None
 
 @st.cache_data
 def carregar_dados():
@@ -67,20 +57,36 @@ def carregar_dados():
             
     df = pd.read_excel(nome_arquivo)
     df.columns = [str(col).strip().upper() for col in df.columns]
-    
+
     col_local = next((c for c in df.columns if 'LOCAL' in c), 'LOCAIS DE VOTAÇÃO')
+    col_link = next((c for c in df.columns if 'LINK' in c or 'MAPA' in c or 'URL' in c), None)
+
+    cache_file = ".cache_coords.csv"
+    if os.path.exists(cache_file):
+        df_cache = pd.read_csv(cache_file)
+        if len(df_cache) == len(df):
+            return df_cache
+
+    lats, lons = [], []
+    bar = st.progress(0, text="Mapeando locais exatos via Google Maps... Aguarde alguns segundos.")
     
-    lats = []
-    lons = []
-    for _, row in df.iterrows():
-        local = str(row[col_local]).strip()
-        coords = COORDENADAS_ARARUAMA.get(local, (-22.8712, -42.3415))
-        lats.append(coords[0])
-        lons.append(coords[1])
+    for idx, row in df.iterrows():
+        lat, lon = None, None
+        if col_link and pd.notnull(row[col_link]):
+            lat, lon = extrair_coords_do_link(str(row[col_link]).strip())
         
+        lats.append(lat)
+        lons.append(lon)
+        bar.progress((idx + 1) / len(df))
+        
+    bar.empty()
     df['LATITUDE'] = lats
     df['LONGITUDE'] = lons
-    return df
+
+    # Remove entradas onde não conseguiu pegar coordenada para não jogar pino no lugar errado
+    df_valido = df.dropna(subset=['LATITUDE', 'LONGITUDE']).copy()
+    df_valido.to_csv(cache_file, index=False)
+    return df_valido
 
 df = carregar_dados()
 
@@ -96,11 +102,14 @@ if busca:
 else:
     df_filtrado = df.copy()
 
-st.metric("Locais Exibidos no Mapa", f"{len(df_filtrado)} de {len(df)}")
+st.metric("Locais Mapeados Exatamente", f"{len(df_filtrado)} de {len(df)}")
 
-# Mapa
-centro_lat = df_filtrado['LATITUDE'].mean()
-centro_lon = df_filtrado['LONGITUDE'].mean()
+# Configuração do Mapa
+if not df_filtrado.empty:
+    centro_lat = df_filtrado['LATITUDE'].mean()
+    centro_lon = df_filtrado['LONGITUDE'].mean()
+else:
+    centro_lat, centro_lon = -22.8712, -42.3415
 
 m = folium.Map(location=[centro_lat, centro_lon], zoom_start=12, tiles="OpenStreetMap")
 marker_cluster = MarkerCluster().add_to(m)
@@ -111,7 +120,7 @@ for _, row in df_filtrado.iterrows():
     local = row.get('LOCAIS DE VOTAÇÃO', 'Local de Votação')
     secoes = row.get('SEÇÕES', 'N/A')
     link = row.get('LINK', f"https://www.google.com/maps/search/?api=1&query={lat},{lon}")
-    
+
     popup_html = f"""
     <div style="font-family: Arial, sans-serif; font-size: 13px; width: 220px;">
         <h4 style="margin: 0 0 5px 0; color: #1E88E5;">{local}</h4>
@@ -124,7 +133,7 @@ for _, row in df_filtrado.iterrows():
         </a>
     </div>
     """
-    
+
     folium.Marker(
         location=[lat, lon],
         popup=folium.Popup(popup_html, max_width=280),
