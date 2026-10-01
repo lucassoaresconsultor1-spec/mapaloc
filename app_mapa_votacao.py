@@ -74,12 +74,12 @@ def carregar_dados():
 
 df = carregar_dados()
 
-# Colunas identificadas
+# Colunas identificadas no DataFrame
 col_local = next((c for c in df.columns if 'LOCAL' in c), 'LOCAIS DE VOTAÇÃO')
 col_secao = next((c for c in df.columns if 'SEÇ' in c or 'SEC' in c), 'SEÇÕES')
 col_link = next((c for c in df.columns if 'LINK' in c or 'MAPA' in c or 'URL' in c), None)
 
-# Extrai a lista de seções únicas
+# Extração da lista de seções para o menu suspenso
 todas_secoes = set()
 for secoes_str in df[col_secao].dropna().astype(str):
     numeros = re.findall(r'\d+', secoes_str)
@@ -87,25 +87,15 @@ for secoes_str in df[col_secao].dropna().astype(str):
 
 secoes_ordenadas = sorted(list(todas_secoes), key=lambda x: int(x) if x.isdigit() else x)
 
-# --- CRIAÇÃO DAS ABAS NA INTERFACE ---
-aba_mapa, aba_pesquisa = st.tabs(["🗺️ Mapa Geral", "🔍 Aba de Pesquisa"])
+# --- BARRA DE PESQUISA ACIMA DO MAPA ---
+st.subheader("🔍 Pesquisar Local de Votação")
+col_busca1, col_busca2 = st.columns([2, 1])
 
-with aba_pesquisa:
-    st.subheader("🔍 Consultar Local por Seção ou Nome")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        busca_escola = st.text_input("Nome da Escola / Local:", key="input_escola")
-    with col2:
-        secao_selecionada = st.selectbox("Seção Eleitoral:", ["Todas"] + secoes_ordenadas, key="select_secao")
+with col_busca1:
+    busca_escola = st.text_input("Buscar por Nome da Escola / Local:", placeholder="Ex: André Gomes, Unilagos, etc.")
 
-# Também mantém os filtros na barra lateral para acessibilidade mobile
-with st.sidebar:
-    st.header("⚙️ Opções de Filtro")
-    if 'input_escola' not in st.session_state:
-        busca_escola = st.text_input("Buscar Escola:", key="sidebar_escola")
-    if 'select_secao' not in st.session_state:
-        secao_selecionada = st.selectbox("Buscar Seção:", ["Todas"] + secoes_ordenadas, key="sidebar_secao")
+with col_busca2:
+    secao_selecionada = st.selectbox("Filtrar por Número da Seção:", ["Todas"] + secoes_ordenadas)
 
 # --- FILTRAGEM DOS DADOS ---
 df_filtrado = df.copy()
@@ -122,64 +112,56 @@ if secao_selecionada != "Todas":
 
 df_mapa = df_filtrado.dropna(subset=['LATITUDE', 'LONGITUDE'])
 
-with aba_pesquisa:
-    if not df_filtrado.empty:
-        st.dataframe(
-            df_filtrado[[col_local, col_secao, 'LATITUDE', 'LONGITUDE']], 
-            use_container_width=True,
-            hide_index=True
-        )
-    else:
-        st.warning("Nenhum local encontrado para os critérios informados.")
+# Indicador de resultados exibidos
+st.metric("Total de Locais Exibidos", f"{len(df_mapa)} de {len(df)}")
 
-with aba_mapa:
-    st.metric("Total de Locais Exibidos", f"{len(df_mapa)} de {len(df)}")
+# Ajuste automático do centro e zoom do mapa conforme a pesquisa
+if not df_mapa.empty:
+    centro_lat = df_mapa['LATITUDE'].mean()
+    centro_lon = df_mapa['LONGITUDE'].mean()
+    zoom_inicial = 15 if (busca_escola or secao_selecionada != "Todas") else 12
+else:
+    centro_lat, centro_lon = -22.8712, -42.3415
+    zoom_inicial = 12
 
-    # Centro e zoom do mapa
-    if not df_mapa.empty:
-        centro_lat = df_mapa['LATITUDE'].mean()
-        centro_lon = df_mapa['LONGITUDE'].mean()
-        zoom_inicial = 15 if (busca_escola or secao_selecionada != "Todas") else 12
-    else:
-        centro_lat, centro_lon = -22.8712, -42.3415
-        zoom_inicial = 12
+m = folium.Map(location=[centro_lat, centro_lon], zoom_start=zoom_inicial, tiles="OpenStreetMap")
 
-    m = folium.Map(location=[centro_lat, centro_lon], zoom_start=zoom_inicial, tiles="OpenStreetMap")
+# Plugin de Tela Cheia
+Fullscreen(
+    position="topright",
+    title="Expandir Mapa",
+    title_cancel="Sair da Tela Cheia",
+    force_separate_button=True
+).add_to(m)
 
-    Fullscreen(
-        position="topright",
-        title="Expandir Mapa",
-        title_cancel="Sair da Tela Cheia",
-        force_separate_button=True
+# Inserção dos marcadores fixos
+for _, row in df_mapa.iterrows():
+    lat = float(row['LATITUDE'])
+    lon = float(row['LONGITUDE'])
+    local = row.get(col_local, 'Local de Votação')
+    secoes = row.get(col_secao, 'N/A')
+    link = row.get(col_link, f"https://www.google.com/maps/search/?api=1&query={lat},{lon}")
+
+    popup_html = f"""
+    <div style="font-family: Arial, sans-serif; font-size: 13px; width: 220px;">
+        <h4 style="margin: 0 0 5px 0; color: #1E88E5;">{local}</h4>
+        <p style="margin: 0 0 10px 0;"><b>Seções:</b> {secoes}</p>
+        <a href="{link}" target="_blank" 
+           style="background-color: #28a745; color: white; padding: 6px 12px; 
+                  text-decoration: none; border-radius: 4px; display: inline-block; 
+                  font-weight: bold; text-align: center; width: 100%; box-sizing: border-box;">
+            🗺️ Abrir no Google Maps
+        </a>
+    </div>
+    """
+
+    folium.Marker(
+        location=[lat, lon],
+        popup=folium.Popup(popup_html, max_width=280),
+        tooltip=str(local),
+        icon=folium.Icon(color="blue", icon="info-sign")
     ).add_to(m)
 
-    for _, row in df_mapa.iterrows():
-        lat = float(row['LATITUDE'])
-        lon = float(row['LONGITUDE'])
-        local = row.get(col_local, 'Local de Votação')
-        secoes = row.get(col_secao, 'N/A')
-        link = row.get(col_link, f"https://www.google.com/maps/search/?api=1&query={lat},{lon}")
-
-        popup_html = f"""
-        <div style="font-family: Arial, sans-serif; font-size: 13px; width: 220px;">
-            <h4 style="margin: 0 0 5px 0; color: #1E88E5;">{local}</h4>
-            <p style="margin: 0 0 10px 0;"><b>Seções:</b> {secoes}</p>
-            <a href="{link}" target="_blank" 
-               style="background-color: #28a745; color: white; padding: 6px 12px; 
-                      text-decoration: none; border-radius: 4px; display: inline-block; 
-                      font-weight: bold; text-align: center; width: 100%; box-sizing: border-box;">
-                🗺️ Abrir no Google Maps
-            </a>
-        </div>
-        """
-
-        folium.Marker(
-            location=[lat, lon],
-            popup=folium.Popup(popup_html, max_width=280),
-            tooltip=str(local),
-            icon=folium.Icon(color="blue", icon="info-sign")
-        ).add_to(m)
-
-    # Key dinâmica para recarregar o mapa imediatamente
-    map_key = f"map_{busca_escola}_{secao_selecionada}_{len(df_mapa)}"
-    st_folium(m, width="100%", height=550, key=map_key, returned_objects=[])
+# Key dinâmica para atualização instantânea no renderizador do Streamlit
+map_key = f"map_{busca_escola}_{secao_selecionada}_{len(df_mapa)}"
+st_folium(m, width="100%", height=550, key=map_key, returned_objects=[])
