@@ -12,7 +12,6 @@ st.set_page_config(page_title="Mapa de Votação - Araruama", page_icon="🗺️
 st.title("📍 Mapa de Locais de Votação e Seções")
 st.markdown("Visão interativa da 92ª Zona Eleitoral de Araruama.")
 
-@st.cache_data
 def carregar_dados():
     arquivos_tsv = glob.glob("*.tsv")
     arquivos_csv = glob.glob("*.csv")
@@ -69,27 +68,24 @@ def carregar_dados():
     df['LATITUDE'] = lats
     df['LONGITUDE'] = lons
 
-    # Identifica ou cria as colunas padrão
     col_local = next((c for c in df.columns if 'LOCAL' in c), 'LOCAIS DE VOTAÇÃO')
     col_secao = next((c for c in df.columns if 'SEÇ' in c or 'SEC' in c), 'SEÇÕES')
     col_link = next((c for c in df.columns if 'LINK' in c or 'MAPA' in c or 'URL' in c), 'LINK')
 
-    # Adição manual do local faltante (Praia Seca)
-    novo_local = {
+    # Registro forçado da Praia Seca
+    praia_seca = pd.DataFrame([{
         col_local: "PÇA E. COMTE. SÉRGIO RIBEIRO (PRAIA SECA)",
         col_secao: "Praia Seca",
         'LATITUDE': -22.9225214,
         'LONGITUDE': -42.3081065,
         col_link: "https://maps.app.goo.gl/ohsy6xAmdXSqJV4g8?g_st=ac"
-    }
+    }])
 
-    # Verifica se já não existe na lista antes de adicionar
-    ja_existe = False
-    if col_local in df.columns:
-        ja_existe = df[col_local].astype(str).str.contains("SÉRGIO RIBEIRO", case=False, na=False).any()
-
-    if not ja_existe:
-        df = pd.concat([df, pd.DataFrame([novo_local])], ignore_index=True)
+    # Garante inclusão evitando duplicatas
+    if not df.empty and col_local in df.columns:
+        df = df[~df[col_local].astype(str).str.contains("SÉRGIO RIBEIRO", case=False, na=False)]
+    
+    df = pd.concat([df, praia_seca], ignore_index=True)
 
     return df
 
@@ -124,10 +120,10 @@ st.metric("Total de Locais Exibidos", f"{len(df_mapa)} de {len(df)}")
 if not df_mapa.empty:
     centro_lat = df_mapa['LATITUDE'].mean()
     centro_lon = df_mapa['LONGITUDE'].mean()
-    zoom_inicial = 15 if busca.strip() else 12
+    zoom_inicial = 15 if busca.strip() else 11
 else:
     centro_lat, centro_lon = -22.8712, -42.3415
-    zoom_inicial = 12
+    zoom_inicial = 11
 
 m = folium.Map(location=[centro_lat, centro_lon], zoom_start=zoom_inicial, tiles="OpenStreetMap")
 
@@ -139,7 +135,7 @@ Fullscreen(
     force_separate_button=True
 ).add_to(m)
 
-# Marcadores fixos sem agrupamento
+# Marcadores no mapa
 for _, row in df_mapa.iterrows():
     lat = float(row['LATITUDE'])
     lon = float(row['LONGITUDE'])
@@ -167,6 +163,6 @@ for _, row in df_mapa.iterrows():
         icon=folium.Icon(color="blue", icon="info-sign")
     ).add_to(m)
 
-# Key dinâmica para re-renderização imediata no Streamlit
+# Atualização dinâmica da tela
 map_key = f"map_{busca.strip()}_{len(df_mapa)}"
 st_folium(m, width="100%", height=550, key=map_key, returned_objects=[])
