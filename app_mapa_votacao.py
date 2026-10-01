@@ -74,28 +74,26 @@ def carregar_dados():
 
 df = carregar_dados()
 
-# Identificação das colunas do DataFrame
+# Colunas identificadas
 col_local = next((c for c in df.columns if 'LOCAL' in c), 'LOCAIS DE VOTAÇÃO')
 col_secao = next((c for c in df.columns if 'SEÇ' in c or 'SEC' in c), 'SEÇÕES')
 col_link = next((c for c in df.columns if 'LINK' in c or 'MAPA' in c or 'URL' in c), None)
 
-# --- SIDEBAR: OPÇÕES DE FILTRO E PESQUISA ---
+# --- SIDEBAR ---
 st.sidebar.header("🔍 Pesquisa e Filtros")
 
-# Pesquisa por Nome da Escola / Local
 busca_escola = st.sidebar.text_input("Buscar por Nome da Escola/Local:")
 
-# Monta a lista de todas as seções únicas para o Selectbox
+# Lista única de seções
 todas_secoes = set()
 for secoes_str in df[col_secao].dropna().astype(str):
-    # Extrai todos os números de seções da string
     numeros = re.findall(r'\d+', secoes_str)
     todas_secoes.update(numeros)
 
 secoes_ordenadas = sorted(list(todas_secoes), key=lambda x: int(x) if x.isdigit() else x)
 secao_selecionada = st.sidebar.selectbox("Filtrar por Seção Específica:", ["Todas"] + secoes_ordenadas)
 
-# Aplicação dos Filtros
+# --- FILTRAGEM DOS DADOS ---
 df_filtrado = df.copy()
 
 if busca_escola:
@@ -104,29 +102,25 @@ if busca_escola:
     ]
 
 if secao_selecionada != "Todas":
-    # Filtra mantendo apenas as linhas onde a seção aparece na string de seções
     df_filtrado = df_filtrado[
         df_filtrado[col_secao].astype(str).apply(lambda x: re.search(r'\b' + re.escape(secao_selecionada) + r'\b', x) is not None)
     ]
 
 df_mapa = df_filtrado.dropna(subset=['LATITUDE', 'LONGITUDE'])
 
-# Indicador no topo
 st.metric("Total de Locais Exibidos", f"{len(df_mapa)} de {len(df)}")
 
-# Cálculo do centro do mapa
+# Ajuste do centro e zoom do mapa conforme a busca
 if not df_mapa.empty:
     centro_lat = df_mapa['LATITUDE'].mean()
     centro_lon = df_mapa['LONGITUDE'].mean()
-    zoom_inicial = 14 if (busca_escola or secao_selecionada != "Todas") else 12
+    zoom_inicial = 15 if (busca_escola or secao_selecionada != "Todas") else 12
 else:
     centro_lat, centro_lon = -22.8712, -42.3415
     zoom_inicial = 12
 
-# Criação do Mapa Folium
 m = folium.Map(location=[centro_lat, centro_lon], zoom_start=zoom_inicial, tiles="OpenStreetMap")
 
-# Plugin de Tela Cheia
 Fullscreen(
     position="topright",
     title="Expandir Mapa",
@@ -134,7 +128,6 @@ Fullscreen(
     force_separate_button=True
 ).add_to(m)
 
-# Adiciona todos os marcadores diretamente no mapa (sem agrupamento)
 for _, row in df_mapa.iterrows():
     lat = float(row['LATITUDE'])
     lon = float(row['LONGITUDE'])
@@ -162,4 +155,6 @@ for _, row in df_mapa.iterrows():
         icon=folium.Icon(color="blue", icon="info-sign")
     ).add_to(m)
 
-st_folium(m, width="100%", height=550)
+# O segredo está aqui: passar uma chave única baseada nos filtros
+map_key = f"map_{busca_escola}_{secao_selecionada}_{len(df_mapa)}"
+st_folium(m, width="100%", height=550, key=map_key, returned_objects=[])
