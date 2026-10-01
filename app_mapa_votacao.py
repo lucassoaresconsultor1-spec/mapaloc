@@ -25,8 +25,7 @@ def carregar_dados():
     elif arquivos_xlsx:
         df = pd.read_excel(arquivos_xlsx[0])
     else:
-        st.error("Nenhum ficheiro de dados encontrado na pasta do repositório.")
-        st.stop()
+        df = pd.DataFrame()
 
     df.columns = [str(col).strip().upper() for col in df.columns]
 
@@ -70,6 +69,28 @@ def carregar_dados():
     df['LATITUDE'] = lats
     df['LONGITUDE'] = lons
 
+    # Identifica ou cria as colunas padrão
+    col_local = next((c for c in df.columns if 'LOCAL' in c), 'LOCAIS DE VOTAÇÃO')
+    col_secao = next((c for c in df.columns if 'SEÇ' in c or 'SEC' in c), 'SEÇÕES')
+    col_link = next((c for c in df.columns if 'LINK' in c or 'MAPA' in c or 'URL' in c), 'LINK')
+
+    # Adição manual do local faltante (Praia Seca)
+    novo_local = {
+        col_local: "PÇA E. COMTE. SÉRGIO RIBEIRO (PRAIA SECA)",
+        col_secao: "Praia Seca",
+        'LATITUDE': -22.9225214,
+        'LONGITUDE': -42.3081065,
+        col_link: "https://maps.app.goo.gl/ohsy6xAmdXSqJV4g8?g_st=ac"
+    }
+
+    # Verifica se já não existe na lista antes de adicionar
+    ja_existe = False
+    if col_local in df.columns:
+        ja_existe = df[col_local].astype(str).str.contains("SÉRGIO RIBEIRO", case=False, na=False).any()
+
+    if not ja_existe:
+        df = pd.concat([df, pd.DataFrame([novo_local])], ignore_index=True)
+
     return df
 
 df = carregar_dados()
@@ -77,12 +98,12 @@ df = carregar_dados()
 # Colunas identificadas
 col_local = next((c for c in df.columns if 'LOCAL' in c), 'LOCAIS DE VOTAÇÃO')
 col_secao = next((c for c in df.columns if 'SEÇ' in c or 'SEC' in c), 'SEÇÕES')
-col_link = next((c for c in df.columns if 'LINK' in c or 'MAPA' in c or 'URL' in c), None)
+col_link = next((c for c in df.columns if 'LINK' in c or 'MAPA' in c or 'URL' in c), 'LINK')
 
-# --- CAMPO DE PESQUISA UNIFICADO ACIMA DO MAPA ---
+# --- CAMPO DE PESQUISA UNIFICADO ---
 busca = st.text_input(
     "🔍 Pesquisar por Nome do Local ou Número da Seção:", 
-    placeholder="Digite o nome da escola ou o número da seção (ex: Unilagos, 002, 155...)"
+    placeholder="Digite o nome da escola ou o número da seção (ex: Sérgio Ribeiro, Praia Seca, Unilagos, 155...)"
 )
 
 # --- FILTRAGEM DOS DADOS ---
@@ -90,7 +111,6 @@ df_filtrado = df.copy()
 
 if busca.strip():
     termo = busca.strip()
-    # Filtra se o termo estiver presente no NOME DO LOCAL OU nas SEÇÕES
     df_filtrado = df_filtrado[
         df_filtrado[col_local].astype(str).str.contains(termo, case=False, na=False) |
         df_filtrado[col_secao].astype(str).str.contains(termo, case=False, na=False)
@@ -100,7 +120,7 @@ df_mapa = df_filtrado.dropna(subset=['LATITUDE', 'LONGITUDE'])
 
 st.metric("Total de Locais Exibidos", f"{len(df_mapa)} de {len(df)}")
 
-# Ajuste automático de centro e zoom conforme a busca
+# Ajuste automático do centro e zoom do mapa
 if not df_mapa.empty:
     centro_lat = df_mapa['LATITUDE'].mean()
     centro_lon = df_mapa['LONGITUDE'].mean()
@@ -147,6 +167,6 @@ for _, row in df_mapa.iterrows():
         icon=folium.Icon(color="blue", icon="info-sign")
     ).add_to(m)
 
-# Key dinâmica para atualização instantânea da renderização no Streamlit
+# Key dinâmica para re-renderização imediata no Streamlit
 map_key = f"map_{busca.strip()}_{len(df_mapa)}"
 st_folium(m, width="100%", height=550, key=map_key, returned_objects=[])
