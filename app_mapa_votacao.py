@@ -1,157 +1,144 @@
 import os
+import re
+import requests
 import pandas as pd
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
 from folium.plugins import MarkerCluster
 
-# Configuração da página do Streamlit
-st.set_page_config(
-    page_title="Mapa de Votação - Araruama",
-    page_icon="🗺️",
-    layout="wide"
-)
+st.set_page_config(page_title="Mapa de Votação - Araruama", page_icon="🗺️", layout="wide")
 
 st.title("📍 Mapa de Locais de Votação e Seções")
-st.markdown("Visão interativa dos locais de votação da 92ª Zona Eleitoral.")
+st.markdown("Visão interativa da 92ª Zona Eleitoral de Araruama.")
 
 # -----------------------------------------------------------------------------
-# 1. FUNÇÃO PARA CARREGAR E TRATAR OS DADOS
+# FUNÇÃO PARA EXTRAIR LATITUDE E LONGITUDE DIRETO DO LINK DO GOOGLE MAPS
 # -----------------------------------------------------------------------------
-@st.cache_data
-def carregar_dados():
-    nome_arquivo = "Eleições 2026 - 92ª Zona Eleitoral de Araruama.xlsx"
-    
-    # Verifica se o arquivo existe na pasta/repositório
-    if not os.path.exists(nome_arquivo):
-        st.error(f"⚠️ O arquivo `{nome_arquivo}` não foi encontrado no repositório GitHub!")
-        st.stop()
+def extrair_coordenadas_do_link(url):
+    try:
+        # Segue o redirecionamento do link encurtado (maps.app.goo.gl)
+        response = requests.get(url, allow_redirects=True, timeout=5)
+        url_final = response.url
         
-    # Leitura do arquivo Excel
+        # Padrão 1: @lat,lon (ex: @-22.8712,-42.3415)
+        match = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', url_final)
+        if match:
+            return float(match.group(1)), float(match.group(2))
+            
+        # Padrão 2: !3dlat!4dlon
+        match = re.search(r'!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)', url_final)
+        if match:
+            return float(match.group(1)), float(match.group(2))
+            
+        # Padrão 3: ?q=lat,lon
+        match = re.search(r'[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)', url_final)
+        if match:
+            return float(match.group(1)), float(match.group(2))
+            
+        return None, None
+    except Exception:
+        return None, None
+
+# -----------------------------------------------------------------------------
+# CARREGAMENTO E PROCESSAMENTO AUTOMÁTICO
+# -----------------------------------------------------------------------------
+@st.cache_data(ttl=86400) # Guarda em cache por 24h para ser ultra-rápido nas requisições
+def carregar_dados_com_coordenadas_automaticas():
+    nome_arquivo = "Eleições 2026 - 92ª Zona Eleitoral de Araruama.xlsx"
+    if not os.path.exists(nome_arquivo):
+        if os.path.exists("Eleições 2026 - 92ª Zona Eleitoral de Araruama_2.xlsx"):
+            nome_arquivo = "Eleições 2026 - 92ª Zona Eleitoral de Araruama_2.xlsx"
+        else:
+            st.error("⚠️ Planilha não encontrada no repositório GitHub!")
+            st.stop()
+            
     df = pd.read_excel(nome_arquivo)
-    
-    # Padronização dos nomes das colunas (maiúsculas e sem espaços extras)
     df.columns = [str(col).strip().upper() for col in df.columns]
     
-    # Garantir que LATITUDE e LONGITUDE sejam tratadas corretamente
-    # (substitui vírgula por ponto e converte para float)
-    if 'LATITUDE' in df.columns and 'LONGITUDE' in df.columns:
-        df['LATITUDE'] = (
-            df['LATITUDE']
-            .astype(str)
-            .str.replace(',', '.')
-            .str.strip()
-        )
-        df['LONGITUDE'] = (
-            df['LONGITUDE']
-            .astype(str)
-            .str.replace(',', '.')
-            .str.strip()
-        )
-        
-        df['LATITUDE'] = pd.to_numeric(df['LATITUDE'], errors='coerce')
-        df['LONGITUDE'] = pd.to_numeric(df['LONGITUDE'], errors='coerce')
-        
-        # Filtro de segurança: remove linhas sem coordenadas válidas
-        df = df.dropna(subset=['LATITUDE', 'LONGITUDE'])
-        
-        # Filtro de coordenadas plausíveis para o estado do Rio / Araruama
-        # (evita pontos zerados ou invertidos que caem no meio do oceano)
-        df = df[
-            (df['LATITUDE'] < -20.0) & (df['LATITUDE'] > -24.0) &
-            (df['LONGITUDE'] < -40.0) & (df['LONGITUDE'] > -45.0)
-        ]
-    else:
-        st.error("⚠️ As colunas 'LATITUDE' e 'LONGITUDE' não foram encontradas na planilha!")
+    col_link = next((c for c in df.columns if 'LINK' in c or 'URL' in c), None)
+    col_local = next((c for c in df.columns if 'LOCAL' in c), 'LOCAIS DE VOTAÇÃO')
+    
+    if not col_link:
+        st.error("⚠️️ Coluna 'LINK' não encontrada na planilha!")
         st.stop()
         
-    return df
-
-# Carregar os dados
-df = carregar_dados()
-
-# -----------------------------------------------------------------------------
-# 2. PAINEL LATERAL (FILTROS)
-# -----------------------------------------------------------------------------
-st.sidebar.header("🔍 Filtros")
-
-# Filtro por Local de Votação (se a coluna existir)
-coluna_local = next((col for col in ['LOCAL', 'LOCAL_VOTACAO', 'NOME_LOCAL', 'ESCOLA'] if col in df.columns), None)
-
-if coluna_local:
-    locais_disponiveis = ["Todos"] + sorted(df[coluna_local].dropna().unique().tolist())
-    local_selecionado = st.sidebar.selectbox("Selecione o Local de Votação:", locais_disponiveis)
+    lats = []
+    lons = []
     
-    if local_selecionado != "Todos":
-        df_filtrado = df[df[coluna_local] == local_selecionado]
-    else:
-        df_filtrado = df.copy()
+    # Processa os links automaticamente
+    progress_bar = st.progress(0, text="Obtendo coordenadas automaticamente dos links...")
+    total = len(df)
+    
+    for i, row in df.iterrows():
+        link = str(row[col_link]).strip()
+        lat, lon = extrair_coordenadas_do_link(link)
+        lats.append(lat)
+        lons.append(lon)
+        progress_bar.progress((i + 1) / total)
+        
+    progress_bar.empty()
+    
+    df['LATITUDE'] = lats
+    df['LONGITUDE'] = lons
+    
+    # Remove eventuais links que não puderam ser resolvidos
+    df_valido = df.dropna(subset=['LATITUDE', 'LONGITUDE']).copy()
+    
+    return df_valido
+
+df = carregar_dados_com_coordenadas_automaticas()
+
+# -----------------------------------------------------------------------------
+# FILTROS E PESQUISA
+# -----------------------------------------------------------------------------
+st.sidebar.header("🔍 Pesquisa")
+busca = st.sidebar.text_input("Filtrar por Local ou Seção:")
+
+if busca:
+    df_filtrado = df[
+        df['LOCAIS DE VOTAÇÃO'].astype(str).str.contains(busca, case=False, na=False) |
+        df['SEÇÕES'].astype(str).str.contains(busca, case=False, na=False)
+    ]
 else:
     df_filtrado = df.copy()
 
-# Métricas rápidas
-col1, col2 = st.columns(2)
-with col1:
-    st.metric("Total de Locais Exibidos", len(df_filtrado))
-with col2:
-    if 'SEÇÕES' in df_filtrado.columns:
-        st.metric("Total de Seções Registradas", df_filtrado['SEÇÕES'].astype(str).nunique())
+st.metric("Locais Exibidos no Mapa", f"{len(df_filtrado)} de {len(df)}")
 
 # -----------------------------------------------------------------------------
-# 3. CRIAÇÃO DO MAPA INTERATIVO (FOLIUM)
+# CONSTRUÇÃO DO MAPA INTERATIVO (FOLIUM)
 # -----------------------------------------------------------------------------
-# Coordenadas centrais aproximadas de Araruama
-centro_lat = -22.8712
-centro_lon = -42.3415
+centro_lat = df_filtrado['LATITUDE'].mean() if not df_filtrado.empty else -22.8712
+centro_lon = df_filtrado['LONGITUDE'].mean() if not df_filtrado.empty else -42.3415
 
-# Se houver dados filtrados, centraliza o mapa na média dos pontos exibidos
-if not df_filtrado.empty:
-    centro_lat = df_filtrado['LATITUDE'].mean()
-    centro_lon = df_filtrado['LONGITUDE'].mean()
-
-# Criar o objeto de mapa
-m = folium.Map(
-    location=[centro_lat, centro_lon],
-    zoom_start=13,
-    tiles="OpenStreetMap"
-)
-
-# Adicionar o MarkerCluster para agrupar marcadores próximos e evitar sobreposição
+m = folium.Map(location=[centro_lat, centro_lon], zoom_start=12, tiles="OpenStreetMap")
 marker_cluster = MarkerCluster().add_to(m)
 
-# Adicionar os marcadores no mapa
 for _, row in df_filtrado.iterrows():
     lat = row['LATITUDE']
     lon = row['LONGITUDE']
-    
-    nome_local = row[coluna_local] if coluna_local else "Local de Votação"
-    bairro = row.get('BAIRRO', 'Araruama')
+    local = row.get('LOCAIS DE VOTAÇÃO', 'Local de Votação')
     secoes = row.get('SEÇÕES', 'N/A')
+    link = row.get('LINK', '#')
     
-    # Link direto e funcional para abrir no aplicativo do Google Maps no celular
-    gmaps_url = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
-    
-    # HTML formatado para o popup do marcador
     popup_html = f"""
     <div style="font-family: Arial, sans-serif; font-size: 13px; width: 220px;">
-        <h4 style="margin: 0 0 5px 0; color: #1E88E5;">{nome_local}</h4>
-        <b>Bairro:</b> {bairro}<br>
-        <b>Seções:</b> {secoes}<br><br>
-        <a href="{gmaps_url}" target="_blank" 
-           style="background-color: #4CAF50; color: white; padding: 6px 12px; 
+        <h4 style="margin: 0 0 5px 0; color: #1E88E5;">{local}</h4>
+        <p style="margin: 0 0 10px 0;"><b>Seções:</b> {secoes}</p>
+        <a href="{link}" target="_blank" 
+           style="background-color: #28a745; color: white; padding: 6px 12px; 
                   text-decoration: none; border-radius: 4px; display: inline-block; 
-                  font-weight: bold; text-align: center;">
+                  font-weight: bold; text-align: center; width: 100%; box-sizing: border-box;">
             🗺️ Abrir no Google Maps
         </a>
     </div>
     """
     
     folium.Marker(
-        location=[lat, lon],  # Ordem estrita [LATITUDE, LONGITUDE]
+        location=[lat, lon],
         popup=folium.Popup(popup_html, max_width=280),
-        tooltip=str(nome_local),
+        tooltip=str(local),
         icon=folium.Icon(color="blue", icon="info-sign")
     ).add_to(marker_cluster)
 
-# Renderizar o mapa dentro do Streamlit
 st_folium(m, width="100%", height=550)
