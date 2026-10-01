@@ -14,7 +14,6 @@ st.markdown("Visão interativa da 92ª Zona Eleitoral de Araruama.")
 
 @st.cache_data
 def carregar_dados():
-    # Procura automaticamente por ficheiros TSV, CSV ou XLSX na pasta
     arquivos_tsv = glob.glob("*.tsv")
     arquivos_csv = glob.glob("*.csv")
     arquivos_xlsx = glob.glob("*.xlsx")
@@ -29,13 +28,10 @@ def carregar_dados():
         st.error("Nenhum ficheiro de dados encontrado na pasta do repositório.")
         st.stop()
 
-    # Normaliza nomes das colunas
     df.columns = [str(col).strip().upper() for col in df.columns]
 
-    lats = []
-    lons = []
+    lats, lons = [], []
 
-    # Procura coluna combinada "LATITUDE, LONGITUDE" ou colunas separadas
     col_comb = next((c for c in df.columns if 'LAT' in c and 'LON' in c), None)
     col_lat = next((c for c in df.columns if 'LAT' in c and 'LON' not in c), None)
     col_lon = next((c for c in df.columns if 'LON' in c and 'LAT' not in c), None)
@@ -43,18 +39,19 @@ def carregar_dados():
     for _, row in df.iterrows():
         lat, lon = None, None
         
-        # 1. Tenta extrair da coluna combinada
+        # Extração da coluna combinada "LATITUDE, LONGITUDE"
         if col_comb and pd.notnull(row[col_comb]):
-            texto = str(row[col_comb]).replace(';', ',')
-            partes = texto.split(',')
-            if len(partes) >= 2:
-                try:
-                    lat = float(partes[0].strip())
-                    lon = float(partes[1].strip())
-                except ValueError:
-                    pass
+            # Extrai números decimais negativos/positivos com regex
+            nums = re.findall(r'-?\d+\.\d+', str(row[col_comb]))
+            if len(nums) >= 2:
+                v1, v2 = float(nums[0]), float(nums[1])
+                # Garante que Latitude seja ~ -22 e Longitude seja ~ -42 (Região dos Lagos)
+                if v1 < -35 and v2 > -30:
+                    lat, lon = v2, v1
+                else:
+                    lat, lon = v1, v2
                     
-        # 2. Tenta extrair das colunas separadas se ainda não encontrou
+        # Extração de colunas separadas
         if lat is None and col_lat and pd.notnull(row[col_lat]):
             try:
                 lat = float(str(row[col_lat]).replace(',', '.').strip())
@@ -66,6 +63,11 @@ def carregar_dados():
                 lon = float(str(row[col_lon]).replace(',', '.').strip())
             except ValueError:
                 pass
+
+        # Inversão de segurança para a Região dos Lagos
+        if lat is not None and lon is not None:
+            if lat < -35 and lon > -30:
+                lat, lon = lon, lat
 
         lats.append(lat)
         lons.append(lon)
@@ -92,7 +94,6 @@ if busca:
 else:
     df_filtrado = df.copy()
 
-# Filtra registos com coordenadas válidas
 df_mapa = df_filtrado.dropna(subset=['LATITUDE', 'LONGITUDE'])
 
 st.metric("Total de Locais Mapeados", f"{len(df_mapa)} de {len(df)}")
