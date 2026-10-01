@@ -1,3 +1,5 @@
+import os
+import glob
 import pandas as pd
 import streamlit as st
 import folium
@@ -11,18 +13,37 @@ st.markdown("Visão interativa da 92ª Zona Eleitoral de Araruama.")
 
 @st.cache_data
 def carregar_dados():
-    # Lê o ficheiro CSV diretamente do GitHub
-    df = pd.read_csv("Eleições 2026 - 92ª Zona Eleitoral de Araruama.csv")
+    # Procura automaticamente qualquer arquivo CSV ou XLSX na pasta do projeto
+    arquivos_csv = glob.glob("*.csv")
+    arquivos_xlsx = glob.glob("*.xlsx")
+    
+    if arquivos_csv:
+        nome_arquivo = arquivos_csv[0]
+        df = pd.read_csv(nome_arquivo)
+    elif arquivos_xlsx:
+        nome_arquivo = arquivos_xlsx[0]
+        df = pd.read_excel(nome_arquivo)
+    else:
+        st.error("Nenhum arquivo de planilha (CSV ou XLSX) foi encontrado na pasta do GitHub.")
+        st.stop()
+
     df.columns = [str(col).strip().upper() for col in df.columns]
+
+    # Verifica se Latitude e Longitude estão juntas em uma única coluna ou separadas
+    col_coords = next((c for c in df.columns if 'LATITUDE' in c and 'LONGITUDE' in c), None)
     
-    # Se a coluna de coordenadas estiver juntas como "LATITUDE, LONGITUDE", faz a separação automática
-    col_lat_lon = next((c for c in df.columns if 'LATITUDE' in c or 'LONGITUDE' in c), None)
-    
-    if col_lat_lon and 'LATITUDE' not in df.columns:
-        coords = df[col_lat_lon].astype(str).str.split(',', expand=True)
-        df['LATITUDE'] = coords[0].astype(float)
-        df['LONGITUDE'] = coords[1].astype(float)
-        
+    if col_coords:
+        # Separa a coluna combinada "LATITUDE, LONGITUDE"
+        df[['LATITUDE', 'LONGITUDE']] = df[col_coords].astype(str).str.split(',', expand=True)
+        df['LATITUDE'] = pd.to_numeric(df['LATITUDE'].str.strip(), errors='coerce')
+        df['LONGITUDE'] = pd.to_numeric(df['LONGITUDE'].str.strip(), errors='coerce')
+    else:
+        # Garante a conversão para número caso estejam em colunas separadas
+        if 'LATITUDE' in df.columns:
+            df['LATITUDE'] = pd.to_numeric(df['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
+        if 'LONGITUDE' in df.columns:
+            df['LONGITUDE'] = pd.to_numeric(df['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
+
     return df
 
 df = carregar_dados()
@@ -31,10 +52,13 @@ df = carregar_dados()
 st.sidebar.header("🔍 Pesquisa")
 busca = st.sidebar.text_input("Filtrar por Local ou Seção:")
 
+col_local = next((c for c in df.columns if 'LOCAL' in c), 'LOCAIS DE VOTAÇÃO')
+col_secao = next((c for c in df.columns if 'SEÇ' in c or 'SEC' in c), 'SEÇÕES')
+
 if busca:
     df_filtrado = df[
-        df['LOCAIS DE VOTAÇÃO'].astype(str).str.contains(busca, case=False, na=False) |
-        df['SEÇÕES'].astype(str).str.contains(busca, case=False, na=False)
+        df[col_local].astype(str).str.contains(busca, case=False, na=False) |
+        df[col_secao].astype(str).str.contains(busca, case=False, na=False)
     ]
 else:
     df_filtrado = df.copy()
@@ -52,12 +76,14 @@ else:
 m = folium.Map(location=[centro_lat, centro_lon], zoom_start=12, tiles="OpenStreetMap")
 marker_cluster = MarkerCluster().add_to(m)
 
+col_link = next((c for c in df.columns if 'LINK' in c or 'MAPA' in c or 'URL' in c), None)
+
 for _, row in df_mapa.iterrows():
     lat = float(row['LATITUDE'])
     lon = float(row['LONGITUDE'])
-    local = row.get('LOCAIS DE VOTAÇÃO', 'Local de Votação')
-    secoes = row.get('SEÇÕES', 'N/A')
-    link = row.get('LINK', f"https://www.google.com/maps/search/?api=1&query={lat},{lon}")
+    local = row.get(col_local, 'Local de Votação')
+    secoes = row.get(col_secao, 'N/A')
+    link = row.get(col_link, f"https://www.google.com/maps/search/?api=1&query={lat},{lon}")
 
     popup_html = f"""
     <div style="font-family: Arial, sans-serif; font-size: 13px; width: 220px;">
