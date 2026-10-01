@@ -5,9 +5,9 @@ import pandas as pd
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
-from folium.plugins import MarkerCluster
+from folium.plugins import Fullscreen
 
-st.set_page_config(page_title="Mapa de Votação - Araruama", page_icon="🗺️", layout="wide")
+st.set_page_config(page_title="Mapa de Votação - Araruama", page_icon="🗺️️", layout="wide")
 
 st.title("📍 Mapa de Locais de Votação e Seções")
 st.markdown("Visão interativa da 92ª Zona Eleitoral de Araruama.")
@@ -39,19 +39,15 @@ def carregar_dados():
     for _, row in df.iterrows():
         lat, lon = None, None
         
-        # Extração da coluna combinada "LATITUDE, LONGITUDE"
         if col_comb and pd.notnull(row[col_comb]):
-            # Extrai números decimais negativos/positivos com regex
             nums = re.findall(r'-?\d+\.\d+', str(row[col_comb]))
             if len(nums) >= 2:
                 v1, v2 = float(nums[0]), float(nums[1])
-                # Garante que Latitude seja ~ -22 e Longitude seja ~ -42 (Região dos Lagos)
                 if v1 < -35 and v2 > -30:
                     lat, lon = v2, v1
                 else:
                     lat, lon = v1, v2
                     
-        # Extração de colunas separadas
         if lat is None and col_lat and pd.notnull(row[col_lat]):
             try:
                 lat = float(str(row[col_lat]).replace(',', '.').strip())
@@ -64,7 +60,6 @@ def carregar_dados():
             except ValueError:
                 pass
 
-        # Inversão de segurança para a Região dos Lagos
         if lat is not None and lon is not None:
             if lat < -35 and lon > -30:
                 lat, lon = lon, lat
@@ -105,10 +100,18 @@ else:
     centro_lat, centro_lon = -22.8712, -42.3415
 
 m = folium.Map(location=[centro_lat, centro_lon], zoom_start=12, tiles="OpenStreetMap")
-marker_cluster = MarkerCluster().add_to(m)
+
+# Adiciona o botão de Tela Cheia no mapa
+Fullscreen(
+    position="topright",
+    title="Expandir Mapa",
+    title_cancel="Sair da Tela Cheia",
+    force_separate_button=True
+).add_to(m)
 
 col_link = next((c for c in df.columns if 'LINK' in c or 'MAPA' in c or 'URL' in c), None)
 
+# Adiciona os pontos diretamente no mapa, sem agrupamento
 for _, row in df_mapa.iterrows():
     lat = float(row['LATITUDE'])
     lon = float(row['LONGITUDE'])
@@ -134,6 +137,6 @@ for _, row in df_mapa.iterrows():
         popup=folium.Popup(popup_html, max_width=280),
         tooltip=str(local),
         icon=folium.Icon(color="blue", icon="info-sign")
-    ).add_to(marker_cluster)
+    ).add_to(m)
 
 st_folium(m, width="100%", height=550)
